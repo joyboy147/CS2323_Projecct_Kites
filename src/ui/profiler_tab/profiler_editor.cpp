@@ -9,6 +9,7 @@
 #include "ui/common/syntax_highlighter.h"
 #include "instruction_type_gutter_column.h"
 #include "execution_count_gutter_column.h"
+#include "stall_heat_gutter_column.h"
 namespace Kites
 {
 
@@ -22,6 +23,7 @@ ProfilerEditor::ProfilerEditor(QWidget *parent, Profiler* profiler) : KitesEdito
     //DO NOT CHANGE THE ORDER OF THESE TWO LINES BELOW. 
     addRightGutterColumn(new ExecutionCountGutterColumn(this));
     addRightGutterColumn(new InstructionTypeGutterColumn(this));
+    addRightGutterColumn(new StallHeatGutterColumn(this));
     updateViewPortMargins();
 }
 
@@ -59,6 +61,25 @@ void ProfilerEditor::setExecutionCount(const std::map<int, int> &hitCounts)
     }
     setExtraSelections(selections);
     viewport()->update();
+}
+
+void ProfilerEditor::setStallCycles(const std::map<int, uint64_t> &lineStallCycles)
+{
+    m_lineStallCycles = lineStallCycles;
+    m_maxStallCycles = 0;
+    for (const auto &[line, cycles] : m_lineStallCycles)
+        m_maxStallCycles = std::max(m_maxStallCycles, cycles);
+    updateViewPortMargins(); // the gutter is zero-width until the first profile
+    viewport()->update();
+}
+
+void ProfilerEditor::revealLine(int line)
+{
+    const QTextBlock block = document()->findBlockByNumber(line - 1);
+    if (!block.isValid())
+        return;
+    setTextCursor(QTextCursor(block));
+    centerCursor();
 }
 
 void ProfilerEditor::setInstructionTypes(const std::map<int, std::string> &instructionTypes)

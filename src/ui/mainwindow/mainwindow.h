@@ -33,6 +33,7 @@ class MainWindow : public QMainWindow
         CacheTabIndex,
         CompilerTabIndex,
         ProfilerTabIndex,
+        SuggestionsTabIndex,
         TabCount
     };
 
@@ -68,6 +69,10 @@ private:
     QThread           *m_processorThread   {nullptr};
     TabIndex           m_currentTabIndex   {TabIndex::EditorTabIndex};
     ExecutionState     m_executionState    {ExecutionState::Stopped};
+    // Last program handed to the processor by run(), for the stall profiler's private re-run.
+    AssembledProgram   m_lastProgram{};
+    std::string        m_lastSource{};
+    bool               m_lastRunWasFullRun{false};
 
     std::array<KitesTab*, toIndex(TabIndex::TabCount)> m_tabs;
 public slots:

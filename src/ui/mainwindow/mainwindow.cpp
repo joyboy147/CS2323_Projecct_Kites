@@ -12,6 +12,7 @@
 #include "ui/memory_tab/memorytab.h"
 #include "ui/processor_tab/processortab.h"
 #include "ui/profiler_tab/profilertab.h"
+#include "ui/suggestions_tab/suggestionstab.h"
 #include "ui/theme/icon_manager.h"
 #include "ui_mainwindow.h"
 #include "utils/utils.h"
@@ -269,6 +270,7 @@ void MainWindow::setUpSidebar()
     m_sidebar->addItem(new QListWidgetItem(iconManager.getIcon(Icon::Cache), "Cache"));
     m_sidebar->addItem(new QListWidgetItem(iconManager.getIcon(Icon::Compiler), "Compiler"));
     m_sidebar->addItem(new QListWidgetItem(iconManager.getIcon(Icon::Profiler), "Profiler"));
+    m_sidebar->addItem(new QListWidgetItem(iconManager.getIcon(Icon::Suggestions), "Suggestions"));
     m_sidebar->setIconSize(QSize(20, 20));
     m_sidebar->setMinimumWidth(48);
     m_sidebar->setCurrentRow(0);
@@ -397,6 +399,7 @@ void MainWindow::setUpTabs()
     m_tabs[TabIndex::CacheTabIndex]     = new CacheTab(this, m_processorManager->getMemoryController());
     m_tabs[TabIndex::CompilerTabIndex]  = new CompilerTab(this);
     m_tabs[TabIndex::ProfilerTabIndex]  = new ProfilerTab(this, m_processorManager->getProfiler());
+    m_tabs[TabIndex::SuggestionsTabIndex] = new SuggestionsTab(this);
     // a little experiment
     connect(this, &MainWindow::processorChangedSignal,
             dynamic_cast<ProcessorTab *>(m_tabs[TabIndex::ProcessorTabIndex]),
@@ -408,6 +411,47 @@ void MainWindow::setUpTabs()
     m_stackedTabs->addWidget(m_tabs[TabIndex::CacheTabIndex]);
     m_stackedTabs->addWidget(m_tabs[TabIndex::CompilerTabIndex]);
     m_stackedTabs->addWidget(m_tabs[TabIndex::ProfilerTabIndex]);
+    m_stackedTabs->addWidget(m_tabs[TabIndex::SuggestionsTabIndex]);
+
+    auto *suggestionsTab = static_cast<SuggestionsTab *>(m_tabs[TabIndex::SuggestionsTabIndex]);
+    suggestionsTab->setSourceProvider(
+        [this]()
+        { return dynamic_cast<EditorTab *>(m_tabs[TabIndex::EditorTabIndex])->getRawText(); });
+    suggestionsTab->setProcessorTypeProvider(
+        [this]() { return m_processorManager->getProcessorType(); });
+    connect(suggestionsTab, &SuggestionsTab::applyToEditorRequested, this,
+            [this](const QString &text)
+            {
+                if (m_executionState != ExecutionState::Stopped)
+                {
+                    QMessageBox::information(this, "Suggestions",
+                                             "Stop the running program before applying a "
+                                             "suggestion.");
+                    return;
+                }
+                dynamic_cast<EditorTab *>(m_tabs[TabIndex::EditorTabIndex])->setRawText(text);
+            });
+    connect(this, &MainWindow::processorChangedSignal, suggestionsTab,
+            &SuggestionsTab::onProcessorChanged);
+
+    auto *profilerTab = static_cast<ProfilerTab *>(m_tabs[TabIndex::ProfilerTabIndex]);
+    profilerTab->setSourceProvider(
+        [this]()
+        { return dynamic_cast<EditorTab *>(m_tabs[TabIndex::EditorTabIndex])->getRawText(); });
+    profilerTab->setProcessorTypeProvider(
+        [this]() { return m_processorManager->getProcessorType(); });
+    connect(profilerTab, &ProfilerTab::jumpToEditorLineRequested, this,
+            [this](int line)
+            {
+                m_sidebar->setCurrentRow(TabIndex::EditorTabIndex);
+                dynamic_cast<EditorTab *>(m_tabs[TabIndex::EditorTabIndex])->goToLine(line);
+            });
+    connect(profilerTab, &ProfilerTab::suggestFixRequested, this,
+            [this, suggestionsTab](int line)
+            {
+                m_sidebar->setCurrentRow(TabIndex::SuggestionsTabIndex);
+                suggestionsTab->analyzeAndFocusLine(line);
+            });
 }
 
 bool MainWindow::tryParseAndLoadProgram()
@@ -442,6 +486,8 @@ bool MainWindow::tryParseAndLoadProgram()
         
         m_processorManager->loadProgram(assembledProgram);
         m_processorManager->setBreakpoints(editor->getBreakpoints());
+        m_lastProgram = assembledProgram;
+        m_lastSource = rawText;
         return true;
     }
     catch (const std::exception &e)
@@ -465,6 +511,8 @@ void MainWindow::run()
             editorTab->setExpandedLocked(true);
         }
 
+        m_executionState = ExecutionState::Running;
+        m_lastRunWasFullRun = true;
         emit runProcessorSignal();
     }
     else
@@ -503,6 +551,17 @@ void MainWindow::processorChanged(const ProcessorType &vmType)
 
 void MainWindow::runFinishedSlot()
 {
+    m_executionState = ExecutionState::Stopped;
+    if (m_lastRunWasFullRun)
+    {
+        // runFinishedSlot() also runs when parsing fails; only a real run is profiled.
+        m_lastRunWasFullRun = false;
+        auto *profilerTab = dynamic_cast<ProfilerTab *>(m_tabs[TabIndex::ProfilerTabIndex]);
+        if (profilerTab)
+            profilerTab->onRunFinished(m_lastProgram, m_lastSource,
+                                       m_processorManager->getProcessorType(),
+                                       m_processorManager->getCycles());
+    }
     auto *editor = dynamic_cast<EditorTab *>(m_tabs[TabIndex::EditorTabIndex]);
     editor->setCanWrite(true); // re-enable writing in editor when vm stops
     editor->setExpandedLocked(false);
@@ -590,7 +649,8 @@ void MainWindow::themeChangedSlot([[maybe_unused]] const QString &themeId)
 
     // sidebar icons
     static const std::array<Icon, toIndex(TabIndex::TabCount)> sidebarIcons = {
-        Icon::Editor, Icon::Memory, Icon::Processor, Icon::Cache, Icon::Compiler, Icon::Profiler};
+        Icon::Editor,   Icon::Memory,   Icon::Processor,  Icon::Cache,
+        Icon::Compiler, Icon::Profiler, Icon::Suggestions};
     for (int row = 0; row < m_sidebar->count(); ++row)
     {
         if (row < static_cast<int>(sidebarIcons.size()))

@@ -26,6 +26,7 @@ enum class Icon
     Save,
     Settings,
     About,
+    Suggestions,
     IconCount
 };
 

@@ -31,6 +31,8 @@ public:
     void setErrorLinesFromFile(const std::filesystem::path &filepath);
     std::string getRawText();
     void setRawText(const QString &text);
+    /** @brief Show the editor view and put the cursor on `line` (1-based). */
+    void goToLine(int line);
     void resetErrorLines();
     void highlightLines(const std::vector<std::pair<int,std::string>> &editorLines, 
       const std::vector<std::pair<int,std::string>> &disassemblyLines);

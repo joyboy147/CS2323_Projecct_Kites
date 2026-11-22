@@ -1,71 +1,35 @@
 /**
  * @file basic_block_scheduler.h
- * @brief Conservative Phase-1 instruction scheduler for KITES basic blocks.
+ * @brief Qt-free basic-block instruction scheduler for the Kites 5-stage pipeline.
  *
- * The scheduler has no Qt dependency.  It consumes the assembler's intermediate
- * code and returns an alternative order only when all register and memory
- * ordering constraints are preserved.  Applying the result to source code is a
- * later UI concern; this module deliberately does not modify a program.
+ * Splits an assembled program into basic blocks of source-line units, builds a
+ * dependency DAG per block (RAW/WAR/WAW/memory/barrier), and picks the cheapest
+ * legal order under the selected stall model. A block's new order is accepted only
+ * if its model cost is strictly lower than the original's; otherwise it is kept.
+ * The scheduler never modifies a program (see SuggestionEngine / rewriteSource).
  */
 #pragma once
 
 #include "common/assembled_program.h"
-#include <cstddef>
+#include "scheduler/scheduler_types.h"
+
 #include <vector>
 
 namespace Kites
 {
-enum class DependencyKind
-{
-    ReadAfterWrite,
-    WriteAfterRead,
-    WriteAfterWrite,
-    MemoryOrder,
-    Barrier
-};
-
-struct DependencyEdge
-{
-    size_t producer{}; ///< Index within BasicBlockSchedule::originalInstructionIndices.
-    size_t consumer{}; ///< Index within BasicBlockSchedule::originalInstructionIndices.
-    DependencyKind kind{};
-    unsigned int latency{}; ///< Earliest cycle distance required by the selected pipeline mode.
-};
-
-/** Pipeline assumptions used for scheduling and cycle estimates. */
-struct SchedulingOptions
-{
-    bool forwardingEnabled{true};
-    bool hazardDetectionEnabled{true};
-};
-
-struct BasicBlockSchedule
-{
-    std::vector<size_t> originalInstructionIndices;
-    std::vector<size_t> scheduledInstructionIndices;
-    std::vector<DependencyEdge> dependencies;
-    unsigned int originalCycleCount{};
-    unsigned int scheduledCycleCount{};
-};
-
-struct SchedulingResult
-{
-    std::vector<BasicBlockSchedule> blocks;
-    unsigned int originalCycleCount{};
-    unsigned int scheduledCycleCount{};
-
-    [[nodiscard]] bool changed() const { return scheduledCycleCount < originalCycleCount; }
-};
-
-/**
- * Splits an assembled program into basic blocks, builds conservative dependency
- * graphs, and list-schedules each block.  Phase 1 supports the integer I/M
- * instruction subset; unsupported instructions are treated as ordering barriers.
- */
+/** @brief Splits a program into blocks and picks a cheaper legal order for each. */
 class BasicBlockScheduler
 {
   public:
     [[nodiscard]] SchedulingResult schedule(const AssembledProgram &program,
-                                             const SchedulingOptions &options) const;
+                                            const SchedulingOptions &options) const;
 };
+
+/**
+ * Units that moved when `original` is reordered into `suggested` (both permutations of
+ * [0, n)), via a longest-common-subsequence match. On a tie the element with the higher
+ * original position is the one reported as moved. Returns a mask indexed by unit id.
+ */
+std::vector<bool> movedUnits(const std::vector<std::size_t> &original,
+                             const std::vector<std::size_t> &suggested);
 } // namespace Kites

@@ -68,3 +68,25 @@ Set via `-D<OPTION>=ON|OFF` at configure time, or in `CMakePresets.json`:
   g++ -print-file-name=libgcov.a
   ```
   A real path back means it's present; the bare filename echoed back means it isn't found.
+## Scheduler and stall-profiler tests
+
+| File | What it checks |
+| --- | --- |
+| `test/basic_block_scheduler_test.cpp` | Phase-1 scheduler behaviour (kept unchanged). |
+| `test/scheduler_core_test.cpp` | Qt-free scheduler core: DAG legality, Kites hazard model, block choice, LCS moves, explanations, rewriting, diagrams. |
+| `test/scheduler_kites_validation_test.cpp` | Model cycles == real Kites cycles on examples and random programs (HF/HNF), equivalence of suggestions, apply round-trip. |
+| `test/stall_profiler_test.cpp` | Qt-free stall profiler on hand-written stage snapshots (identity, causes, flushes, truncation). |
+| `test/stall_profiler_kites_test.cpp` | Profiler identity `cycles = retired + stall + flush + fill + truncated` with zero unclassified cycles, on every example and 60 random control-flow programs in HF, HNF, NH_F and NH_NF; sample-program properties; cycle limit, cancel and ecall stop. |
+| `test/selection_evaluator_test.cpp` | Per-block selection: every subset of accepted blocks re-evaluated, rewritten, verified and run on Kites. |
+
+These tests read example programs relative to `test/` (CTest's working directory).
+
+## Running the suite without Qt
+
+`tools/headless/` builds the non-GUI sources against small Qt stand-ins (see its README):
+
+```sh
+cmake -S tools/headless -B build-headless -G Ninja
+cmake --build build-headless
+(cd test && ../build-headless/kites_headless_test)
+```

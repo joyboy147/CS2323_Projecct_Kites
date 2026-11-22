@@ -18,6 +18,8 @@
 
 * When naming variables that store count of something prefer nameCount 
   eg. prefer m_wayCount instead of m_numWays
+* Plain aggregates (POD-style structs with public fields, e.g. `ICUnit`, `StallProfile`)
+  use camelCase fields without the `m_` prefix.
 
 ## Exceptions
 * Hardware/ISA Configurations: Enum values that map directly to hardware structures, ISA documentation, or processor configurations (e.g., AluOP, PipelineStage, VMType) may use ALL_CAPS to maintain alignment with architectural nomenclature.

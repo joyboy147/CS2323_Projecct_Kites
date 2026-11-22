@@ -3,6 +3,8 @@
 #include "ui/theme/theme_manager.h"
 #include "ui_editortab.h"
 #include <QFile>
+#include <QTextBlock>
+#include <QTextCursor>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -133,6 +135,18 @@ std::vector<uint64_t> EditorTab::getBreakpoints() const
 void EditorTab::setRawText(const QString &text)
 {
     m_editor->setPlainText(text);
+}
+
+void EditorTab::goToLine(int line)
+{
+    if (!m_expandedLocked)
+        switchToEditorView();
+    const QTextBlock block = m_editor->document()->findBlockByNumber(line - 1);
+    if (!block.isValid())
+        return;
+    m_editor->setTextCursor(QTextCursor(block));
+    m_editor->centerCursor();
+    m_editor->setFocus();
 }
 
 void EditorTab::resetErrorLines()

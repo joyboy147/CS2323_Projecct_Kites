@@ -13,11 +13,13 @@ namespace Kites
 {
 class ExecutionCountGutterColumn; 
 class InstructionTypeGutterColumn; // forward declaration
+class StallHeatGutterColumn;
 class ProfilerEditor : public KitesEditor
 {
     Q_OBJECT
     friend class ExecutionCountGutterColumn;
     friend class InstructionTypeGutterColumn;
+    friend class StallHeatGutterColumn;
 public:
     explicit ProfilerEditor(QWidget *parent = nullptr, Profiler* profiler = nullptr);
     ~ProfilerEditor() {};
@@ -27,6 +29,10 @@ public:
     void setInstructionTypes(const std::map<int, std::string>
                                  &instructionTypes); // line number to instruction type mapping
     void clearExecutionCount();
+    /** @brief Cycles lost per line (stall profiler); shown in the stall heat gutter. */
+    void setStallCycles(const std::map<int, uint64_t> &lineStallCycles);
+    /** @brief Scroll to `line` (1-based) and put the cursor on it. */
+    void revealLine(int line);
     
 public slots:
         void incrementLineExecutionCountSlot(int lineNumber);
@@ -44,6 +50,8 @@ private:
     std::map<int, int> m_lineNumberToExecutionCounts;
     std::map<int, std::string> m_lineNumberToInstructionType;
     int m_maxExecutionCount = 0; // to determine the color intensity for heatmap
+    std::map<int, uint64_t> m_lineStallCycles;
+    uint64_t m_maxStallCycles = 0;
     //LineStatsModel *m_lineStatsModel = nullptr; // model to hold line stats data
     QColor heatColor(int hitCount) const; // Helper function to determine color based on hit count
     QColor heatBackgroundColor(

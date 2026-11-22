@@ -1,4 +1,5 @@
 #include "assembler/assembler.h"
+#include "processor/rv5s/rv5s_processor_h_nf.h"
 #include "processor/rv5s/rv5s_processor_h_f.h"
 #include "scheduler/basic_block_scheduler.h"
 #include "utils/utils.h"
@@ -31,11 +32,12 @@ AssembledProgram programFrom(std::initializer_list<ICUnit> instructions)
     return program;
 }
 
-std::unique_ptr<RV5StageProcessorHF> runForwardingProgram(const std::string &source)
+template <typename Processor>
+std::unique_ptr<Processor> runProgram(const std::string &source)
 {
     setupVmStateDirectory();
     std::istringstream input(source);
-    auto processor = std::make_unique<RV5StageProcessorHF>();
+    auto processor = std::make_unique<Processor>();
     processor->LoadProgram(assemble(input));
     processor->DebugRun();
     return processor;
@@ -55,6 +57,21 @@ TEST(BasicBlockScheduler, FillsLoadUseBubbleWithIndependentInstruction)
               (std::vector<size_t>{0, 2, 1}));
     EXPECT_EQ(result.originalCycleCount, 4U);
     EXPECT_EQ(result.scheduledCycleCount, 3U);
+}
+
+TEST(BasicBlockScheduler, ModelsLongerLoadUseDelayWithoutForwarding)
+{
+    const auto program = programFrom({makeInstruction(0, "lw", "x5", "x1"),
+                                      makeInstruction(1, "add", "x6", "x5", "x2"),
+                                      makeInstruction(2, "addi", "x7", "x3")});
+
+    const auto result = BasicBlockScheduler{}.schedule(program, {.forwardingEnabled = false});
+
+    ASSERT_EQ(result.blocks.size(), 1U);
+    EXPECT_EQ(result.blocks.front().scheduledInstructionIndices,
+              (std::vector<size_t>{0, 2, 1}));
+    EXPECT_EQ(result.originalCycleCount, 5U);
+    EXPECT_EQ(result.scheduledCycleCount, 4U);
 }
 
 TEST(BasicBlockScheduler, PreservesAntiDependencies)
@@ -105,8 +122,35 @@ TEST(BasicBlockScheduler, MatchesKitesCycleImprovementForLoadUseGap)
         add  x6, x3, x1
     )";
 
-    const auto originalProcessor = runForwardingProgram(original);
-    const auto reorderedProcessor = runForwardingProgram(reordered);
+    const auto originalProcessor = runProgram<RV5StageProcessorHF>(original);
+    const auto reorderedProcessor = runProgram<RV5StageProcessorHF>(reordered);
+
+    EXPECT_EQ(originalProcessor->registers_.ReadGpr(6), reorderedProcessor->registers_.ReadGpr(6));
+    EXPECT_EQ(originalProcessor->registers_.ReadGpr(7), reorderedProcessor->registers_.ReadGpr(7));
+    EXPECT_LT(reorderedProcessor->cycle_s_, originalProcessor->cycle_s_);
+}
+
+TEST(BasicBlockScheduler, MatchesKitesCycleImprovementWithoutForwarding)
+{
+    const std::string original = R"(
+        addi x1, x0, 100
+        addi x2, x0, 20
+        sw   x2, 0(x1)
+        lw   x3, 0(x1)
+        add  x6, x3, x1
+        addi x7, x0, 1
+    )";
+    const std::string reordered = R"(
+        addi x1, x0, 100
+        addi x2, x0, 20
+        sw   x2, 0(x1)
+        lw   x3, 0(x1)
+        addi x7, x0, 1
+        add  x6, x3, x1
+    )";
+
+    const auto originalProcessor = runProgram<RV5StageProcessorHNF>(original);
+    const auto reorderedProcessor = runProgram<RV5StageProcessorHNF>(reordered);
 
     EXPECT_EQ(originalProcessor->registers_.ReadGpr(6), reorderedProcessor->registers_.ReadGpr(6));
     EXPECT_EQ(originalProcessor->registers_.ReadGpr(7), reorderedProcessor->registers_.ReadGpr(7));

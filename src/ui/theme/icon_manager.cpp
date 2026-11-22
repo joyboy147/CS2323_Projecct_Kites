@@ -62,5 +62,6 @@ void IconManager::setUpIconPaths()
     m_iconPaths[toIndex(Icon::Save)]      = ":/icons/save.svg";
     m_iconPaths[toIndex(Icon::Settings)]  = ":/icons/settings.svg";
     m_iconPaths[toIndex(Icon::About)]     = ":/icons/about.svg";
+    m_iconPaths[toIndex(Icon::Suggestions)] = ":/icons/suggestions.svg";
 }
 }//namespace Kites

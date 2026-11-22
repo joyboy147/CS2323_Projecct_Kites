@@ -18,5 +18,6 @@
         <file>save.svg</file>
         <file>settings.svg</file>
         <file>about.svg</file>
+        <file>suggestions.svg</file>
     </qresource>
 </RCC>
