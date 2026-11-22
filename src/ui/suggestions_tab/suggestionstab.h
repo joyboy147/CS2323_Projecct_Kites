@@ -5,6 +5,7 @@
 #pragma once
 
 #include "processor/processor_types.h"
+#include "scheduler/loop_unroller.h"
 #include "scheduler/pipeline_trace.h"
 #include "scheduler/runtime/kites_trace_runner.h"
 #include "scheduler/selection_evaluator.h"
@@ -77,6 +78,8 @@ class SuggestionsTab : public KitesTab
         bool pending{};      ///< The block selection changed; the Kites re-run is debounced.
         unsigned originalCycles{};
         unsigned suggestedCycles{};
+        uint64_t originalTakenBranches{};
+        uint64_t suggestedTakenBranches{};
         bool hitCycleLimit{};
         QString error;
     };
@@ -94,6 +97,9 @@ class SuggestionsTab : public KitesTab
     void setSelection(const std::vector<bool> &selection);
     void onExplanationChanged(QListWidgetItem *item);
     void rebuildSuggestedListing();
+    [[nodiscard]] unsigned selectedUnrollFactor() const;
+    [[nodiscard]] bool hasApplicableChange() const;
+    [[nodiscard]] std::string sourceToApply() const;
     AnalysisContext resolveContext() const;
     void showError(const QString &message);
     void render();
@@ -110,6 +116,7 @@ class SuggestionsTab : public KitesTab
 
     QComboBox *m_modelCombo = nullptr;
     QComboBox *m_latencyCombo = nullptr;
+    QComboBox *m_unrollCombo = nullptr;
     QPushButton *m_analyzeButton = nullptr;
     QPushButton *m_applyButton = nullptr;
     QPushButton *m_revertButton = nullptr;
@@ -129,8 +136,11 @@ class SuggestionsTab : public KitesTab
     QTimer *m_refreshTimer = nullptr;
 
     KitesTraceRunner m_runner;
+    AssembledProgram m_originalProgram; ///< Program before optional loop unrolling.
     AssembledProgram m_program;    ///< The analyzed (expanded) program.
+    std::string m_originalSource;  ///< Expanded editor source before optional loop unrolling.
     std::string m_expandedSource;  ///< Its source text.
+    LoopUnrollResult m_unrollResult;
     ProgramSuggestion m_full;      ///< All accepted blocks; m_last is the selected subset.
     std::vector<bool> m_selection; ///< Per block; only accepted blocks can be true.
     bool m_customPseudo = false;

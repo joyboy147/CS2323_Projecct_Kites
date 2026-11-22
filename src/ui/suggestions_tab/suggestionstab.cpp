@@ -132,6 +132,13 @@ void SuggestionsTab::buildControls(QVBoxLayout *layout)
     m_latencyCombo = new QComboBox(this);
     m_latencyCombo->addItems({"Kites latencies (exact)", "Custom latencies"});
     controls->addWidget(m_latencyCombo);
+    controls->addWidget(new QLabel("Loop unrolling:", this));
+    m_unrollCombo = new QComboBox(this);
+    m_unrollCombo->addItems({"Off", "2", "4"});
+    m_unrollCombo->setToolTip(
+        "Unroll eligible simple counted loops before scheduling. Larger factors reduce taken "
+        "loop branches but increase code size.");
+    controls->addWidget(m_unrollCombo);
     m_analyzeButton =
         new QPushButton(IconManager::getInstance().getIcon(Icon::Play), "Analyze", this);
     m_applyButton = new QPushButton("Apply to editor", this);
@@ -236,6 +243,15 @@ void SuggestionsTab::buildListingsAndExplanations(QVBoxLayout *layout)
     connect(m_revertButton, &QPushButton::clicked, this, &SuggestionsTab::onRevert);
     connect(m_latencyCombo, &QComboBox::currentIndexChanged, this,
             [this](int index) { m_latencyPanel->setVisible(index == kCustomLatencies); });
+    connect(m_unrollCombo, &QComboBox::currentIndexChanged, this,
+            [this](int)
+            {
+                if (!m_hasResult)
+                    return;
+                m_stale = true;
+                m_applyButton->setEnabled(false);
+                renderBanner();
+            });
     connect(m_origTable, &QTableWidget::itemSelectionChanged, this,
             [this]() { syncSelection(m_origTable, m_suggTable); });
     connect(m_suggTable, &QTableWidget::itemSelectionChanged, this,
@@ -278,6 +294,37 @@ QTableWidget *SuggestionsTab::createListingTable(const QStringList &headers)
     table->horizontalHeader()->setSectionResizeMode(kTextColumn, QHeaderView::Stretch);
     table->setFont(FontManager::getInstance().currentFont());
     return table;
+}
+
+unsigned SuggestionsTab::selectedUnrollFactor() const
+{
+    switch (m_unrollCombo->currentIndex())
+    {
+    case 1:
+        return 2;
+    case 2:
+        return 4;
+    default:
+        return 1;
+    }
+}
+
+bool SuggestionsTab::hasApplicableChange() const
+{
+    if (m_customPseudo)
+        return false; // Applying would replace the user's pseudo-instruction source with expansion.
+    const bool schedulerChange = m_last.status == ProgramSuggestion::Status::Improved &&
+                                 m_last.canApply;
+    const bool anyChange = schedulerChange || m_unrollResult.changed();
+    // Every source-changing path must be confirmed by the Kites equivalence run.
+    return anyChange && m_run.available && m_run.equivalent;
+}
+
+std::string SuggestionsTab::sourceToApply() const
+{
+    // If scheduling is not applicable (or the user unticked every scheduling block), applying
+    // the verified unrolled source is still valid.
+    return m_last.canApply ? m_last.rewrittenSource : m_expandedSource;
 }
 
 void SuggestionsTab::linkScrollBars(QTableWidget *first, QTableWidget *second, bool vertical)
@@ -393,14 +440,39 @@ void SuggestionsTab::onAnalyze()
     const std::string raw = m_sourceProvider();
     const std::string expanded = customPseudoManager::expandPseudoInstruction(raw);
     m_context = resolveContext();
-    AssembledProgram program;
-    if (!assembleForAnalysis(expanded, program))
+    AssembledProgram originalProgram;
+    if (!assembleForAnalysis(expanded, originalProgram))
         return;
 
-    m_program = std::move(program);
-    m_expandedSource = expanded;
+    m_unrollResult = unrollSimpleCountedLoops(expanded, selectedUnrollFactor());
+    AssembledProgram program;
+    if (!assembleForAnalysis(m_unrollResult.source, program))
+        return;
+
+    m_originalProgram = std::move(originalProgram);
+    m_originalSource = expanded;
+    m_program = std::move(program); // The unrolled source is subsequently DAG-scheduled.
+    m_expandedSource = m_unrollResult.source;
     m_customPseudo = expanded != raw;
-    m_full = SuggestionEngine{}.analyze(expanded, m_program, m_context.options);
+    m_full = SuggestionEngine{}.analyze(m_expandedSource, m_program, m_context.options);
+    if (selectedUnrollFactor() > 1)
+    {
+        if (m_unrollResult.changed())
+        {
+            m_full.statusMessage = "Loop unrolling ×" +
+                                   std::to_string(m_unrollResult.factor) + " applied to " +
+                                   std::to_string(m_unrollResult.loopsUnrolled) +
+                                   (m_unrollResult.loopsUnrolled == 1 ? " eligible loop. "
+                                                                     : " eligible loops. ") +
+                                   m_full.statusMessage;
+        }
+        else if (!m_unrollResult.notes.empty())
+        {
+            m_full.statusMessage = "Loop unrolling ×" +
+                                   std::to_string(m_unrollResult.factor) + ": " +
+                                   m_unrollResult.notes.front() + " " + m_full.statusMessage;
+        }
+    }
     m_selection.assign(m_full.schedule.blocks.size(), false);
     for (std::size_t b = 0; b < m_selection.size(); ++b)
         m_selection[b] = m_full.schedule.blocks[b].accepted;
@@ -413,8 +485,8 @@ void SuggestionsTab::onAnalyze()
 
     TraceRunOptions runOptions;
     runOptions.processor = m_context.runProcessor;
-    m_originalRun = m_runner.run(m_program, runOptions);
-    m_origDiag = buildDiagram(m_originalRun, m_program, m_expandedSource);
+    m_originalRun = m_runner.run(m_originalProgram, runOptions);
+    m_origDiag = buildDiagram(m_originalRun, m_originalProgram, m_originalSource);
     refreshSuggestedRun();
 
     m_selectionStatus->clear();
@@ -449,6 +521,8 @@ void SuggestionsTab::verifySuggestion(AssembledProgram &suggestedProgram,
 {
     suggestedProgram = m_program;
     suggestedSource = m_expandedSource;
+    // Loop unrolling changes instruction count, so its safety is confirmed by the final Kites
+    // equivalence run below. Source rewriting itself still uses the existing strict checker.
     if (!m_last.canApply)
         return;
     try
@@ -478,11 +552,11 @@ void SuggestionsTab::verifySuggestion(AssembledProgram &suggestedProgram,
 void SuggestionsTab::runOnKites(const AssembledProgram &suggestedProgram,
                                 const std::string &suggestedSource)
 {
-    const bool reordered = suggestedSource != m_expandedSource;
+    const bool changed = suggestedSource != m_originalSource;
     TraceRunOptions runOptions;
     runOptions.processor = m_context.runProcessor;
     const TraceRunResult suggested =
-        reordered ? m_runner.run(suggestedProgram, runOptions) : m_originalRun;
+        changed ? m_runner.run(suggestedProgram, runOptions) : m_originalRun;
 
     m_run = RunSummary{};
     if (!m_originalRun.ok || !suggested.ok)
@@ -498,12 +572,14 @@ void SuggestionsTab::runOnKites(const AssembledProgram &suggestedProgram,
     else
     {
         m_run.available = true;
-        m_run.suggestedRan = reordered;
+        m_run.suggestedRan = changed;
         m_run.equivalent = m_originalRun.gpr == suggested.gpr &&
                            m_originalRun.fpr == suggested.fpr &&
                            m_originalRun.dataMemory == suggested.dataMemory;
         m_run.originalCycles = m_originalRun.trace.kitesCycleCount;
         m_run.suggestedCycles = suggested.trace.kitesCycleCount;
+        m_run.originalTakenBranches = m_originalRun.counters.branchMispredictions;
+        m_run.suggestedTakenBranches = suggested.counters.branchMispredictions;
         m_run.hitCycleLimit = m_originalRun.trace.hitCycleLimit || suggested.trace.hitCycleLimit;
         if (!m_run.equivalent && m_last.canApply)
         {
@@ -622,7 +698,7 @@ void SuggestionsTab::onExplanationChanged(QListWidgetItem *item)
 
 void SuggestionsTab::onApply()
 {
-    if (!m_hasResult || !m_last.canApply || m_run.pending || !m_sourceProvider)
+    if (!m_hasResult || !hasApplicableChange() || m_run.pending || !m_sourceProvider)
         return;
     const std::string current = m_sourceProvider();
     if (current != m_analyzedSource)
@@ -633,7 +709,7 @@ void SuggestionsTab::onApply()
         return;
     }
     m_preApplyText = current;
-    emit applyToEditorRequested(QString::fromStdString(m_last.rewrittenSource));
+    emit applyToEditorRequested(QString::fromStdString(sourceToApply()));
     m_applyButton->setEnabled(false);
     m_revertButton->setEnabled(true);
     m_stale = true;
@@ -685,9 +761,7 @@ void SuggestionsTab::render()
     fillListing(m_suggTable, m_last.suggestedListing, true);
     fillExplanations();
 
-    m_applyButton->setEnabled(!m_stale && !m_run.pending &&
-                              m_last.status == ProgramSuggestion::Status::Improved &&
-                              m_last.canApply);
+    m_applyButton->setEnabled(!m_stale && !m_run.pending && hasApplicableChange());
 }
 
 void SuggestionsTab::renderBanner()
@@ -695,7 +769,8 @@ void SuggestionsTab::renderBanner()
     if (!m_hasResult)
         return;
     const ProgramSuggestion &s = m_last;
-    const bool improved = s.status == ProgramSuggestion::Status::Improved;
+    const bool schedulerImproved = s.status == ProgramSuggestion::Status::Improved;
+    const bool improved = schedulerImproved || m_unrollResult.changed();
     const QString mode = processorName(m_context.runProcessor);
     QStringList parts;
 
@@ -735,14 +810,32 @@ void SuggestionsTab::renderBanner()
             parts << QString("stalls %1 &rarr; %2")
                          .arg(m_origDiag.totalStallCycles)
                          .arg(m_suggDiag.totalStallCycles);
-            const long modelDelta = static_cast<long>(s.suggestedStraightLineCycles) -
-                                    static_cast<long>(s.originalStraightLineCycles);
-            if (modelDelta == kitesDelta)
-                parts << "model predicted " + signedDelta(modelDelta) + " &#10003;";
-            else
-                parts << "model predicted " + signedDelta(modelDelta) +
-                             " per pass; Kites measured " + signedDelta(kitesDelta) +
-                             " (loops repeat the saving, taken branches skip code)";
+            if (m_unrollResult.changed())
+            {
+                parts << QString("loop unrolled &times;%1 (%2 loop%3)")
+                             .arg(m_unrollResult.factor)
+                             .arg(m_unrollResult.loopsUnrolled)
+                             .arg(m_unrollResult.loopsUnrolled == 1 ? "" : "s");
+                // Kites resolves every taken conditional branch in MEM, flushing three younger
+                // instructions. Keep this separate from jal/jalr flushes, which unrolling does
+                // not target.
+                parts << QString("taken-branch flushes %1 &rarr; %2 cycles (%3 &rarr; %4 taken "
+                                 "branches)")
+                             .arg(m_run.originalTakenBranches * 3)
+                             .arg(m_run.suggestedTakenBranches * 3)
+                             .arg(m_run.originalTakenBranches)
+                             .arg(m_run.suggestedTakenBranches);
+            }
+            if (schedulerImproved)
+            {
+                const long modelDelta = static_cast<long>(s.suggestedStraightLineCycles) -
+                                        static_cast<long>(s.originalStraightLineCycles);
+                if (!m_unrollResult.changed() && modelDelta == kitesDelta)
+                    parts << "model predicted " + signedDelta(modelDelta) + " &#10003;";
+                else
+                    parts << "scheduler model predicted " + signedDelta(modelDelta) +
+                                 " after unrolling";
+            }
             parts << (m_run.equivalent ? "final registers &amp; data memory identical &#10003;"
                                        : "final registers or data memory differ &#10007;");
         }
@@ -754,7 +847,7 @@ void SuggestionsTab::renderBanner()
 
     QString html = parts.join(" &middot; ");
     html += "<br>" + escaped(s.statusMessage);
-    if (improved && !s.canApply)
+    if (schedulerImproved && !s.canApply && !m_unrollResult.changed())
         html += "<br>Apply is disabled: " + escaped(s.applyBlockedReason) + ".";
     if (!m_context.modelNote.isEmpty())
         html += "<br>" + m_context.modelNote.toHtmlEscaped();
